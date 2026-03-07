@@ -541,8 +541,18 @@ export class E2EEManager
         codec,
         hasPacketTrailer,
       };
-      // @ts-ignore
-      receiver.transform = new RTCRtpScriptTransform(this.worker, options);
+      // Only reassign transform if trackId actually changed OR first time
+      if (!(E2EE_FLAG in receiver) || receiver[E2EE_FLAG] !== trackId) {
+        // @ts-ignore
+        receiver.transform = new RTCRtpScriptTransform(this.worker, options);
+      } else if (codec) {
+        // only update codec
+        const msg: UpdateCodecMessage = {
+          kind: 'updateCodec',
+          data: { trackId, codec, participantIdentity },
+        };
+        this.worker.postMessage(msg);
+      }
     } else {
       if (E2EE_FLAG in receiver && codec) {
         // update track-specific state when the transceiver is reused
@@ -590,7 +600,7 @@ export class E2EEManager
     }
 
     // @ts-ignore
-    receiver[E2EE_FLAG] = true;
+    receiver[E2EE_FLAG] = trackId;
   }
 
   /**
