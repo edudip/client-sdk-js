@@ -38,6 +38,7 @@ import type {
   KeyInfo,
   RTPVideoMapMessage,
   RatchetRequestMessage,
+  ReinitCryptorMessage,
   RemoveTransformMessage,
   ScriptTransformOptions,
   SetKeyMessage,
@@ -541,17 +542,25 @@ export class E2EEManager
         codec,
         hasPacketTrailer,
       };
-      // Only reassign transform if trackId actually changed OR first time
       if (!(E2EE_FLAG in receiver) || receiver[E2EE_FLAG] !== trackId) {
         // @ts-ignore
         receiver.transform = new RTCRtpScriptTransform(this.worker, options);
-      } else if (codec) {
-        // only update codec
-        const msg: UpdateCodecMessage = {
-          kind: 'updateCodec',
-          data: { trackId, codec, participantIdentity },
+      } else {
+        // Firefox reuses RTCRtpReceiver across reconnects. The existing RTCRtpScriptTransform
+        // and its pipe remain valid — re-associate the worker cryptor with the new participant
+        // session so decryption resumes correctly without creating a second transform.
+        const reinitMsg: ReinitCryptorMessage = {
+          kind: 'reinitCryptor',
+          data: { trackId, participantIdentity },
         };
-        this.worker.postMessage(msg);
+        this.worker.postMessage(reinitMsg);
+        if (codec) {
+          const codecMsg: UpdateCodecMessage = {
+            kind: 'updateCodec',
+            data: { trackId, codec, participantIdentity },
+          };
+          this.worker.postMessage(codecMsg);
+        }
       }
     } else {
       if (E2EE_FLAG in receiver && codec) {

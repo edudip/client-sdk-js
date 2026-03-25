@@ -75,6 +75,14 @@ export interface RemoveTransformMessage extends BaseMessage {
   };
 }
 
+export interface ReinitCryptorMessage extends BaseMessage {
+  kind: 'reinitCryptor';
+  data: {
+    participantIdentity: string;
+    trackId: string;
+  };
+}
+
 export interface UpdateCodecMessage extends BaseMessage {
   kind: 'updateCodec';
   data: {
@@ -176,6 +184,7 @@ export type E2EEWorkerMessage =
   | ErrorMessage
   | EnableMessage
   | RemoveTransformMessage
+  | ReinitCryptorMessage
   | RTPVideoMapMessage
   | UpdateCodecMessage
   | RatchetRequestMessage

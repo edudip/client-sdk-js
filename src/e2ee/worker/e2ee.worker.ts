@@ -162,6 +162,16 @@ onmessage = (ev) => {
       case 'removeTransform':
         unsetCryptorParticipant(data.trackId, data.participantIdentity);
         break;
+      case 'reinitCryptor':
+        // Re-associate the existing cryptor with the participant after a receiver reuse
+        // (e.g. Firefox reusing RTCRtpReceiver across reconnects). The pipe is already
+        // running; we just need to restore the participant identity and key handler.
+        getTrackCryptor(data.participantIdentity, data.trackId);
+        workerLogger.info('re-associated cryptor after receiver reuse', {
+          participantIdentity: data.participantIdentity,
+          trackId: data.trackId,
+        });
+        break;
       case 'updateCodec':
         const trackCryptor = getTrackCryptor(data.participantIdentity, data.trackId);
         trackCryptor.setVideoCodec(data.codec);
