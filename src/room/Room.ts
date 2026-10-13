@@ -2239,7 +2239,13 @@ class Room extends (EventEmitter as new () => TypedEmitter<RoomEventCallbacks>) 
       const devicesOfKind = availableDevices.filter((d) => d.kind === kind);
       const activeDevice = this.getActiveDevice(kind);
 
-      if (activeDevice === previousDevices.filter((info) => info.kind === kind)[0]?.deviceId) {
+      // Never for cameras: Safari lists macOS's preferred camera first, which changes when another
+      // app picks a camera, without any device being added or removed. Switching then stops the
+      // published camera before opening the other one, and leaves it stopped if that fails.
+      if (
+        kind !== 'videoinput' &&
+        activeDevice === previousDevices.filter((info) => info.kind === kind)[0]?.deviceId
+      ) {
         // in  Safari the first device is always the default, so we assume a user on the default device would like to switch to the default once it changes
         // FF doesn't emit an event when the default device changes, so we perform the same best effort and switch to the new device once connected and if it's the first in the array
         if (devicesOfKind.length > 0 && devicesOfKind[0]?.deviceId !== activeDevice) {

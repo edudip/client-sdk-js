@@ -1,5 +1,6 @@
 import { ClientInfo_Capability, JoinResponse } from '@livekit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import DeviceManager from './DeviceManager';
 import Room from './Room';
 import { roomConnectOptionDefaults, roomOptionDefaults } from './defaults';
 import { RoomEvent } from './events';
@@ -28,6 +29,67 @@ describe('Active device switch', () => {
 
     expect(deviceId).toBe('test');
     expect(kind).toBe('audioinput');
+  });
+});
+
+describe('Default device selection on device changes', () => {
+  const device = (kind: MediaDeviceKind, deviceId: string) =>
+    ({ kind, deviceId, label: deviceId, groupId: '', toJSON: () => ({}) }) as MediaDeviceInfo;
+
+  /** What LiveKit compares the new device list against: the result of the last enumeration. */
+  const setPreviousDevices = (devices: MediaDeviceInfo[]) => {
+    (
+      DeviceManager.getInstance() as unknown as { _previousDevices: MediaDeviceInfo[] }
+    )._previousDevices = devices;
+  };
+
+  /** A room whose `kind` was on the first device of `previous` when the list changed to `current`. */
+  const roomAfterDeviceChange = (
+    kind: MediaDeviceKind,
+    previous: MediaDeviceInfo[],
+    current: MediaDeviceInfo[],
+  ) => {
+    const room = new Room();
+    room.localParticipant.activeDeviceMap.set(kind, previous[0].deviceId);
+    setPreviousDevices(previous);
+    vi.spyOn(DeviceManager.getInstance(), 'getDevices').mockResolvedValue(current);
+    const switchActiveDevice = vi.spyOn(room, 'switchActiveDevice').mockResolvedValue(true);
+    const selectDefaultDevices = () =>
+      (room as unknown as { selectDefaultDevices: () => Promise<void> }).selectDefaultDevices();
+    return { selectDefaultDevices, switchActiveDevice };
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    setPreviousDevices([]);
+  });
+
+  it('does not switch the camera when another camera becomes the first one', async () => {
+    const facetime = device('videoinput', 'facetime');
+    const obs = device('videoinput', 'obs');
+    const { selectDefaultDevices, switchActiveDevice } = roomAfterDeviceChange(
+      'videoinput',
+      [facetime, obs],
+      [obs, facetime],
+    );
+
+    await selectDefaultDevices();
+
+    expect(switchActiveDevice).not.toHaveBeenCalled();
+  });
+
+  it('still switches the microphone when another microphone becomes the first one', async () => {
+    const builtIn = device('audioinput', 'built-in');
+    const headset = device('audioinput', 'headset');
+    const { selectDefaultDevices, switchActiveDevice } = roomAfterDeviceChange(
+      'audioinput',
+      [builtIn, headset],
+      [headset, builtIn],
+    );
+
+    await selectDefaultDevices();
+
+    expect(switchActiveDevice).toHaveBeenCalledWith('audioinput', 'headset');
   });
 });
 
