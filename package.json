@@ -1,6 +1,6 @@
 {
   "name": "@edudip/livekit-client",
-  "version": "2.21.0-e2ee-fix",
+  "version": "2.21.1-e2ee-fix",
   "description": "JavaScript/TypeScript client SDK for LiveKit",
   "main": "./dist/livekit-client.umd.js",
   "unpkg": "./dist/livekit-client.umd.js",

@@ -557,7 +557,7 @@ export class E2EEManager
         if (codec) {
           const codecMsg: UpdateCodecMessage = {
             kind: 'updateCodec',
-            data: { trackId, codec, participantIdentity },
+            data: { trackId, codec, participantIdentity, hasPacketTrailer },
           };
           this.worker.postMessage(codecMsg);
         }
