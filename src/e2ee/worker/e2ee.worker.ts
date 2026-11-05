@@ -16,6 +16,7 @@ import type {
   RatchetRequestMessage,
   RatchetResult,
   ScriptTransformOptions,
+  SenderEncryptingMessage,
 } from '../types';
 import { DataCryptor } from './DataCryptor';
 import { FrameCryptor, encryptionEnabledMap } from './FrameCryptor';
@@ -308,6 +309,13 @@ async function setSharedKey(key: CryptoKey, index?: number, updateCurrentKeyInde
 }
 
 function setupCryptorErrorEvents(cryptor: FrameCryptor) {
+  cryptor.on(CryptorEvent.SenderEncrypting, (trackId, participantIdentity) => {
+    const msg: SenderEncryptingMessage = {
+      kind: 'senderEncrypting',
+      data: { trackId, participantIdentity },
+    };
+    postMessage(msg);
+  });
   cryptor.on(CryptorEvent.Error, (error) => {
     const msg: ErrorMessage = {
       kind: 'error',

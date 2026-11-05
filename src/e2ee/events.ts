@@ -50,8 +50,14 @@ export type E2EEManagerCallbacks = {
 
 export type CryptorCallbacks = {
   [CryptorEvent.Error]: (error: CryptorError) => void;
+  [CryptorEvent.SenderEncrypting]: (trackId: string, participantIdentity: string) => void;
 };
 
 export enum CryptorEvent {
   Error = 'cryptorError',
+  /**
+   * The first frame of a sender's transform was handled with encryption enabled: from now on the
+   * transform is attached and no frame of this sender leaves unencrypted.
+   */
+  SenderEncrypting = 'senderEncrypting',
 }

@@ -177,6 +177,18 @@ export interface PTMetadataFromE2EEMessage extends BaseMessage {
   data: FrameMetadataPayload;
 }
 
+/**
+ * Sent by the worker once the encode transform of a local track handled its first frame with
+ * encryption enabled. The E2eeManager holds the track's media until then (Safari).
+ */
+export interface SenderEncryptingMessage extends BaseMessage {
+  kind: 'senderEncrypting';
+  data: {
+    trackId: string;
+    participantIdentity: string;
+  };
+}
+
 export type E2EEWorkerMessage =
   | InitMessage
   | SetKeyMessage
@@ -195,7 +207,8 @@ export type E2EEWorkerMessage =
   | DecryptDataResponseMessage
   | EncryptDataRequestMessage
   | EncryptDataResponseMessage
-  | PTMetadataFromE2EEMessage;
+  | PTMetadataFromE2EEMessage
+  | SenderEncryptingMessage;
 
 export type KeySet = { material: CryptoKey; encryptionKey: CryptoKey };
 

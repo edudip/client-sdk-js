@@ -11,8 +11,9 @@ import { ParticipantKeyHandler } from './ParticipantKeyHandler';
 
 function mockEncryptedRTCEncodedVideoFrame(keyIndex: number): RTCEncodedVideoFrame {
   const trailer = mockFrameTrailer(keyIndex);
-  const data = new Uint8Array(trailer.length + 10);
-  data.set(trailer, 10);
+  // 10 bytes of payload, the IV, then the trailer
+  const data = new Uint8Array(10 + IV_LENGTH + trailer.length);
+  data.set(trailer, 10 + IV_LENGTH);
   return mockRTCEncodedVideoFrame(data);
 }
 
@@ -193,6 +194,46 @@ describe('FrameCryptor', () => {
 
         expect(output.chunks).toEqual([]);
         expect(errorListener).toHaveBeenCalled();
+      } finally {
+        vitest.useRealTimers();
+      }
+    });
+
+    it('reports SenderEncrypting once, for the first frame handled with encryption enabled', async () => {
+      vitest.useFakeTimers();
+      try {
+        const { cryptor, keys, input, output } = prepareParticipantTestEncoder(
+          participantIdentity,
+          {},
+        );
+        const listener = vitest.fn();
+        cryptor.on(CryptorEvent.SenderEncrypting, listener);
+        await keys.setKey(await createKeyMaterialFromString('key1'), 0);
+
+        input.write(mockRTCEncodedVideoFrame(new Uint8Array(16).fill(1)));
+        input.write(mockRTCEncodedVideoFrame(new Uint8Array(16).fill(2)));
+        await vitest.waitFor(() => expect(output.chunks).toHaveLength(2));
+
+        expect(listener).toHaveBeenCalledTimes(1);
+        expect(listener).toHaveBeenCalledWith('testTrack', participantIdentity);
+      } finally {
+        vitest.useRealTimers();
+      }
+    });
+
+    it('does not report SenderEncrypting while encryption is disabled', async () => {
+      vitest.useFakeTimers();
+      try {
+        const { cryptor, input, output } = prepareParticipantTestEncoder(participantIdentity, {});
+        const listener = vitest.fn();
+        cryptor.on(CryptorEvent.SenderEncrypting, listener);
+        encryptionEnabledMap.set(participantIdentity, false);
+
+        input.write(mockRTCEncodedVideoFrame(new Uint8Array(16).fill(1)));
+        await vitest.advanceTimersToNextTimerAsync();
+
+        expect(output.chunks).toHaveLength(1);
+        expect(listener).not.toHaveBeenCalled();
       } finally {
         vitest.useRealTimers();
       }
@@ -416,6 +457,58 @@ describe('FrameCryptor', () => {
         input.write(mockEncryptedRTCEncodedVideoFrame(0));
         await vitest.advanceTimersToNextTimerAsync();
 
+        expect(output.chunks).toEqual([]);
+      } finally {
+        vitest.useRealTimers();
+      }
+    });
+
+    it('drops a frame without an encryption trailer without counting a failure', async () => {
+      vitest.useFakeTimers();
+      try {
+        const { cryptor, keys, input, output } = prepareParticipantTestDecoder(
+          participantIdentity,
+          {},
+        );
+        await keys.setKey(await createKeyMaterialFromString('key1'), 0);
+        vitest.spyOn(crypto.subtle, 'decrypt');
+        vitest.spyOn(keys, 'decryptionFailure');
+        const errorListener = vitest.fn();
+        cryptor.on(CryptorEvent.Error, errorListener);
+
+        // an unencrypted frame whose last byte happens to be the index of a key we hold
+        const plain = new Uint8Array(40).fill(7);
+        plain[39] = 0;
+        input.write(mockRTCEncodedVideoFrame(plain));
+        await vitest.advanceTimersToNextTimerAsync();
+
+        expect(crypto.subtle.decrypt).not.toHaveBeenCalled();
+        expect(keys.decryptionFailure).not.toHaveBeenCalled();
+        expect(errorListener).not.toHaveBeenCalled();
+        expect(output.chunks).toEqual([]);
+        expect(keys.hasValidKey).toBe(true);
+      } finally {
+        vitest.useRealTimers();
+      }
+    });
+
+    it('drops a frame with a key index outside the keyring without counting a failure', async () => {
+      vitest.useFakeTimers();
+      try {
+        const { cryptor, keys, input, output } = prepareParticipantTestDecoder(
+          participantIdentity,
+          {},
+        );
+        vitest.spyOn(keys, 'decryptionFailure');
+        const errorListener = vitest.fn();
+        cryptor.on(CryptorEvent.Error, errorListener);
+
+        // unencrypted Opus frames from an iPhone were read as key index 127 or 143
+        input.write(mockEncryptedRTCEncodedVideoFrame(127));
+        await vitest.advanceTimersToNextTimerAsync();
+
+        expect(keys.decryptionFailure).not.toHaveBeenCalled();
+        expect(errorListener).not.toHaveBeenCalled();
         expect(output.chunks).toEqual([]);
       } finally {
         vitest.useRealTimers();
