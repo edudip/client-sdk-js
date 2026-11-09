@@ -75,9 +75,6 @@ export class FrameCryptor extends BaseFrameCryptor {
 
   private keyProviderOptions: KeyProviderOptions;
 
-  /** Whether SenderEncrypting was emitted for the current encode transform. */
-  private senderEncryptingReported = false;
-
   /**
    * used for detecting server injected unencrypted frames
    */
@@ -253,7 +250,6 @@ export class FrameCryptor extends BaseFrameCryptor {
 
     // Always update trackId, even on reuse
     this.trackId = trackId;
-    this.senderEncryptingReported = false;
 
     // If we're reusing and have an active transform skip setup
     if (
@@ -413,13 +409,6 @@ export class FrameCryptor extends BaseFrameCryptor {
     if (!this.isEnabled()) {
       this.appendFrameMetadata(encodedFrame);
       return controller.enqueue(encodedFrame);
-    }
-    if (!this.senderEncryptingReported && this.trackId && this.participantIdentity) {
-      // This frame reached the transform, so it is attached: Safari passes frames through
-      // unchanged until it is (see E2eeManager.holdUntilEncrypting). From here on every frame is
-      // encrypted, or dropped while no key is set.
-      this.senderEncryptingReported = true;
-      this.emit(CryptorEvent.SenderEncrypting, this.trackId, this.participantIdentity);
     }
     const keySet = this.keys.getKeySet();
     if (!keySet) {

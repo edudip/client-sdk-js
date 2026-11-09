@@ -2,30 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vitest } from 'vitest';
 import { E2EEManager } from './E2eeManager';
 import { ExternalE2EEKeyProvider } from './KeyProvider';
 
-/** A MediaStreamTrack stand-in whose `enabled` is an accessor on the prototype, like the real one. */
-class FakeTrack {
-  #enabled = true;
-
-  get enabled() {
-    return this.#enabled;
-  }
-
-  set enabled(enabled: boolean) {
-    this.#enabled = enabled;
-  }
-}
-
-/** What the browser sees, whatever `enabled` reports to the app. */
-const sends = (track: FakeTrack) =>
-  Object.getOwnPropertyDescriptor(FakeTrack.prototype, 'enabled')!.get!.call(track);
-
 describe('E2EEManager sender hold', () => {
   let manager: E2EEManager;
+  let posted: object[];
 
   beforeEach(() => {
-    vitest.stubGlobal('MediaStreamTrack', FakeTrack);
+    posted = [];
     manager = new E2EEManager(
-      { keyProvider: new ExternalE2EEKeyProvider(), worker: {} as Worker },
+      {
+        keyProvider: new ExternalE2EEKeyProvider(),
+        worker: { postMessage: (msg: object) => posted.push(msg) } as unknown as Worker,
+      },
       false,
     );
   });
@@ -34,75 +21,76 @@ describe('E2EEManager sender hold', () => {
     vitest.unstubAllGlobals();
   });
 
-  const fakeSender = (track: FakeTrack) => {
-    const sender = {
-      track,
-      replaceTrack: vitest.fn(async function (this: { track: unknown }, next: unknown) {
-        sender.track = next as FakeTrack;
-      }),
+  const track = { id: 'camera' } as MediaStreamTrack;
+
+  /** What the browser would send: replaceTrack as the sender's prototype has it. */
+  const fakeSender = (initial: MediaStreamTrack | null = track) => {
+    const native = vitest.fn(async function (this: RTCRtpSender, next: MediaStreamTrack | null) {
+      sender.track = next;
+    });
+    const sender = { track: initial, replaceTrack: native } as unknown as {
+      track: MediaStreamTrack | null;
+      replaceTrack: (next: MediaStreamTrack | null) => Promise<void>;
     };
-    return sender;
+    return { sender, native };
   };
 
+  const hold = (sender: unknown) => (manager as any).holdUntilAttached(sender, 'TR_1');
   const workerSays = (data: object) => (manager as any).onWorkerMessage({ data } as MessageEvent);
+  const attached = () => workerSays({ kind: 'senderTransformAttached', data: { trackId: 'TR_1' } });
 
-  it('disables the sent track until the worker reports encrypting', () => {
-    const track = new FakeTrack();
-    const sender = fakeSender(track);
+  it('takes the track off the sender until the transform is attached', async () => {
+    const { sender } = fakeSender();
 
-    (manager as any).holdUntilEncrypting(sender, 'TR_1');
+    hold(sender);
+    await Promise.resolve();
+    expect(sender.track).toBeNull();
 
-    expect(sends(track)).toBe(false);
-    // the app still sees the state it set
-    expect(track.enabled).toBe(true);
-
-    workerSays({ kind: 'senderEncrypting', data: { trackId: 'TR_1', participantIdentity: 'me' } });
-
-    expect(sends(track)).toBe(true);
-    expect(Object.getOwnPropertyDescriptor(track, 'enabled')).toBeUndefined();
+    attached();
+    await Promise.resolve();
+    expect(sender.track).toBe(track);
   });
 
-  it('keeps mute and unmute while held and applies the last one on release', () => {
-    const track = new FakeTrack();
-    (manager as any).holdUntilEncrypting(fakeSender(track), 'TR_1');
+  it('sends the check back to the worker, which answers when it gets its turn', () => {
+    workerSays({ kind: 'senderTransformCheck', data: { trackId: 'TR_1' } });
 
-    track.enabled = false; // mute
-    expect(track.enabled).toBe(false);
-    track.enabled = true; // unmute: must not reach the browser yet
-    expect(sends(track)).toBe(false);
-    track.enabled = false; // mute again
-
-    workerSays({ kind: 'senderEncrypting', data: { trackId: 'TR_1', participantIdentity: 'me' } });
-
-    expect(sends(track)).toBe(false);
-    expect(track.enabled).toBe(false);
+    expect(posted).toEqual([{ kind: 'senderTransformCheck', data: { trackId: 'TR_1' } }]);
   });
 
-  it('holds a track given to replaceTrack while held', async () => {
-    const first = new FakeTrack();
-    const second = new FakeTrack();
-    const sender = fakeSender(first);
-    const nativeReplace = sender.replaceTrack;
-    (manager as any).holdUntilEncrypting(sender, 'TR_1');
+  it('keeps a track that LiveKit sets while held off the sender until release', async () => {
+    const { sender, native } = fakeSender();
+    const restarted = { id: 'restarted' } as MediaStreamTrack;
 
-    await sender.replaceTrack(second as unknown as MediaStreamTrack);
+    hold(sender);
+    await sender.replaceTrack(restarted);
+    await Promise.resolve();
+    expect(sender.track).toBeNull();
 
-    expect(nativeReplace).toHaveBeenCalledWith(second);
-    expect(sends(second)).toBe(false);
-
-    workerSays({ kind: 'senderEncrypting', data: { trackId: 'TR_1', participantIdentity: 'me' } });
-
-    expect(sends(second)).toBe(true);
-    expect(sender.replaceTrack).toBe(nativeReplace);
+    attached();
+    await Promise.resolve();
+    expect(sender.track).toBe(restarted);
+    expect(sender.replaceTrack).toBe(native);
   });
 
-  it('ignores the report of another track', () => {
-    const track = new FakeTrack();
-    (manager as any).holdUntilEncrypting(fakeSender(track), 'TR_1');
+  it('ignores the report of another track', async () => {
+    const { sender } = fakeSender();
 
-    workerSays({ kind: 'senderEncrypting', data: { trackId: 'TR_2', participantIdentity: 'me' } });
+    hold(sender);
+    workerSays({ kind: 'senderTransformAttached', data: { trackId: 'TR_2' } });
+    await Promise.resolve();
 
-    expect(sends(track)).toBe(false);
+    expect(sender.track).toBeNull();
+  });
+
+  it('does not put the track back on a sender that went away', async () => {
+    const { sender, native } = fakeSender();
+
+    hold(sender);
+    (manager as any).releaseAllSenders(false);
+    await Promise.resolve();
+
+    expect(sender.track).toBeNull();
+    expect(sender.replaceTrack).toBe(native);
   });
 
   describe('turning encryption off', () => {
@@ -113,69 +101,61 @@ describe('E2EEManager sender hold', () => {
       };
     };
 
-    it('releases a held sender when encryption really is off', () => {
-      const track = new FakeTrack();
+    it('releases a held sender when encryption really is off', async () => {
+      const { sender } = fakeSender();
       inRoom(true);
-      (manager as any).holdUntilEncrypting(fakeSender(track), 'TR_1');
+      hold(sender);
 
       inRoom(false);
       workerSays({ kind: 'enable', data: { enabled: false, participantIdentity: 'me' } });
+      await Promise.resolve();
 
-      expect(sends(track)).toBe(true);
+      expect(sender.track).toBe(track);
     });
 
-    it('keeps holding on a late reply from before encryption was turned on', () => {
-      const track = new FakeTrack();
+    it('keeps holding on a late reply from before encryption was turned on', async () => {
+      const { sender } = fakeSender();
       inRoom(true);
-      (manager as any).holdUntilEncrypting(fakeSender(track), 'TR_1');
+      hold(sender);
 
       workerSays({ kind: 'enable', data: { enabled: false, participantIdentity: 'me' } });
+      await Promise.resolve();
+      expect(sender.track).toBeNull();
 
-      expect(sends(track)).toBe(false);
-
-      workerSays({
-        kind: 'senderEncrypting',
-        data: { trackId: 'TR_1', participantIdentity: 'me' },
-      });
-
-      expect(sends(track)).toBe(true);
+      attached();
+      await Promise.resolve();
+      expect(sender.track).toBe(track);
     });
 
-    it("keeps holding when another participant's encryption goes off", () => {
-      const track = new FakeTrack();
+    it("keeps holding when another participant's encryption goes off", async () => {
+      const { sender } = fakeSender();
       inRoom(true);
-      (manager as any).holdUntilEncrypting(fakeSender(track), 'TR_1');
+      hold(sender);
 
       workerSays({ kind: 'enable', data: { enabled: false, participantIdentity: 'other' } });
+      await Promise.resolve();
 
-      expect(sends(track)).toBe(false);
+      expect(sender.track).toBeNull();
     });
 
-    it('holds a new sender only while encryption is on', () => {
+    it('holds a new sender only while encryption is on', async () => {
       vitest.stubGlobal('RTCRtpScriptTransform', class {});
-      window.RTCRtpScriptTransform = (globalThis as any).RTCRtpScriptTransform;
+      (window as any).RTCRtpScriptTransform = (globalThis as any).RTCRtpScriptTransform;
       try {
-        const encrypted = new FakeTrack();
+        const encrypted = fakeSender();
         inRoom(true);
-        (manager as any).handleSender(fakeSender(encrypted), 'TR_1');
-        expect(sends(encrypted)).toBe(false);
+        (manager as any).handleSender(encrypted.sender, 'TR_1');
+        await Promise.resolve();
+        expect(encrypted.sender.track).toBeNull();
 
-        const plain = new FakeTrack();
+        const plain = fakeSender();
         inRoom(false);
-        (manager as any).handleSender(fakeSender(plain), 'TR_2');
-        expect(sends(plain)).toBe(true);
+        (manager as any).handleSender(plain.sender, 'TR_2');
+        await Promise.resolve();
+        expect(plain.sender.track).toBe(track);
       } finally {
         delete (window as any).RTCRtpScriptTransform;
       }
     });
-  });
-
-  it('releases every held sender when the room disconnects', () => {
-    const track = new FakeTrack();
-    (manager as any).holdUntilEncrypting(fakeSender(track), 'TR_1');
-
-    (manager as any).releaseAllSenders();
-
-    expect(sends(track)).toBe(true);
   });
 });

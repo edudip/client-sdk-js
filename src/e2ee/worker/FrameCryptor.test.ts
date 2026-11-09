@@ -199,46 +199,6 @@ describe('FrameCryptor', () => {
       }
     });
 
-    it('reports SenderEncrypting once, for the first frame handled with encryption enabled', async () => {
-      vitest.useFakeTimers();
-      try {
-        const { cryptor, keys, input, output } = prepareParticipantTestEncoder(
-          participantIdentity,
-          {},
-        );
-        const listener = vitest.fn();
-        cryptor.on(CryptorEvent.SenderEncrypting, listener);
-        await keys.setKey(await createKeyMaterialFromString('key1'), 0);
-
-        input.write(mockRTCEncodedVideoFrame(new Uint8Array(16).fill(1)));
-        input.write(mockRTCEncodedVideoFrame(new Uint8Array(16).fill(2)));
-        await vitest.waitFor(() => expect(output.chunks).toHaveLength(2));
-
-        expect(listener).toHaveBeenCalledTimes(1);
-        expect(listener).toHaveBeenCalledWith('testTrack', participantIdentity);
-      } finally {
-        vitest.useRealTimers();
-      }
-    });
-
-    it('does not report SenderEncrypting while encryption is disabled', async () => {
-      vitest.useFakeTimers();
-      try {
-        const { cryptor, input, output } = prepareParticipantTestEncoder(participantIdentity, {});
-        const listener = vitest.fn();
-        cryptor.on(CryptorEvent.SenderEncrypting, listener);
-        encryptionEnabledMap.set(participantIdentity, false);
-
-        input.write(mockRTCEncodedVideoFrame(new Uint8Array(16).fill(1)));
-        await vitest.advanceTimersToNextTimerAsync();
-
-        expect(output.chunks).toHaveLength(1);
-        expect(listener).not.toHaveBeenCalled();
-      } finally {
-        vitest.useRealTimers();
-      }
-    });
-
     it('encrypts frame', async () => {
       vitest.useFakeTimers();
       try {

@@ -87,8 +87,8 @@ export class E2EEManager
 
   private dataChannelEncryptionEnabled: boolean;
 
-  /** Releases for local senders whose media is held until their encryption is attached, by track id. */
-  private heldSenders: Map<string, () => void> = new Map();
+  /** Ends the hold of local senders that wait for their transform, by track id (see holdUntilAttached). */
+  private heldSenders: Map<string, (restoreTrack: boolean) => void> = new Map();
 
   constructor(options: E2EEManagerOptions, dcEncryptionEnabled: boolean) {
     super();
@@ -198,8 +198,8 @@ export class E2EEManager
           data.participantIdentity === this.room.localParticipant.identity &&
           !this.room.localParticipant.isE2EEEnabled
         ) {
-          // encryption was turned off on purpose: nothing will report encrypting anymore. A late
-          // reply from before encryption was turned on must not release a held sender.
+          // Encryption was turned off on purpose, so no transform is needed anymore. A late reply
+          // from before it was turned on must not release a held sender.
           this.releaseAllSenders();
         }
         if (
@@ -246,7 +246,10 @@ export class E2EEManager
       case 'packetTrailerMetadata':
         this.handleFrameMetadata(data.trackId, data.rtpTimestamp, data.ssrc, data.metadata);
         break;
-      case 'senderEncrypting':
+      case 'senderTransformCheck':
+        this.worker.postMessage(ev.data);
+        break;
+      case 'senderTransformAttached':
         this.releaseSender(data.trackId);
         break;
       default:
@@ -341,10 +344,10 @@ export class E2EEManager
 
     room.localParticipant.on(ParticipantEvent.LocalTrackUnpublished, (publication) => {
       if (publication.track) {
-        this.releaseSender(publication.track.mediaStreamID);
+        this.releaseSender(publication.track.mediaStreamID, false);
       }
     });
-    room.on(RoomEvent.Disconnected, () => this.releaseAllSenders());
+    room.on(RoomEvent.Disconnected, () => this.releaseAllSenders(false));
 
     room.localParticipant.on(ParticipantEvent.LocalSenderCreated, async (sender, track) => {
       this.setupE2EESender(track, sender);
@@ -639,77 +642,52 @@ export class E2EEManager
    *
    */
   /**
-   * Holds the media of a new sender that uses an RTCRtpScriptTransform until the transform encrypts.
+   * Keeps the track off a new sender until its RTCRtpScriptTransform is attached.
    *
-   * WebKit passes frames through unchanged until the worker side of the transform is set up
-   * (LibWebRTCRtpTransformBackend::Transform), which takes a round trip through the main thread. An
-   * iPhone that published right after a reload sent its first frames unencrypted. So the tracks this
-   * sender sends stay disabled until the worker reports that the transform handled a frame with
-   * encryption enabled: what slips through before is black or silent. Meanwhile, writes to `enabled`
-   * (mute, unmute) and tracks given to `replaceTrack` are kept, and applied on release.
+   * WebKit passes frames through unchanged until the transform is attached
+   * (LibWebRTCRtpTransformBackend::Transform), which takes worker -> main thread -> worker tasks after
+   * the rtctransform event. So a sender whose worker is busy would send its first frames unencrypted.
+   * A sender without a track sends nothing. The check message goes the same way behind those tasks,
+   * and through the worker's message queue, behind the setup of the cryptor.
    */
-  private holdUntilEncrypting(sender: RTCRtpSender, trackId: string) {
-    if (typeof MediaStreamTrack === 'undefined' || this.heldSenders.has(trackId)) {
+  private holdUntilAttached(sender: RTCRtpSender, trackId: string) {
+    if (this.heldSenders.has(trackId)) {
       return;
     }
-    const enabledProperty = Object.getOwnPropertyDescriptor(MediaStreamTrack.prototype, 'enabled');
-    const setEnabled = enabledProperty?.set;
-    if (!setEnabled) {
-      return;
-    }
-    const wanted = new Map<MediaStreamTrack, boolean>();
-    const hold = (track: MediaStreamTrack | null) => {
-      if (!track || wanted.has(track)) {
-        return;
-      }
-      wanted.set(track, track.enabled);
-      Object.defineProperty(track, 'enabled', {
-        configurable: true,
-        get: () => wanted.get(track),
-        set: (enabled: boolean) => {
-          wanted.set(track, enabled);
-        },
-      });
-      setEnabled.call(track, false);
-    };
     const replaceTrack = sender.replaceTrack;
-    const ownReplaceTrack = !!Object.getOwnPropertyDescriptor(sender, 'replaceTrack');
-    sender.replaceTrack = (track: MediaStreamTrack | null) => {
-      hold(track);
-      return replaceTrack.call(sender, track);
+    let track = sender.track;
+    replaceTrack.call(sender, null).catch((error) => log.warn('could not hold sender', { error }));
+    // LiveKit's own calls (device switch, restart, processor) must not attach a track early
+    sender.replaceTrack = async (next: MediaStreamTrack | null) => {
+      track = next;
     };
-    hold(sender.track);
-
-    const heldAt = Date.now();
     const warning = setTimeout(
       () => log.warn('sender still waits for its encryption transform', { trackId }),
       5_000,
     );
-    this.heldSenders.set(trackId, () => {
+    this.heldSenders.set(trackId, (restoreTrack) => {
       clearTimeout(warning);
-      if (ownReplaceTrack) {
-        sender.replaceTrack = replaceTrack;
-      } else {
-        Reflect.deleteProperty(sender, 'replaceTrack');
+      sender.replaceTrack = replaceTrack;
+      if (restoreTrack) {
+        sender
+          .replaceTrack(track)
+          .catch((error) => log.warn('could not release sender', { error }));
       }
-      wanted.forEach((enabled, track) => {
-        Reflect.deleteProperty(track, 'enabled');
-        track.enabled = enabled;
-      });
-      log.info('sender encrypts, releasing its media', { trackId, heldMs: Date.now() - heldAt });
     });
   }
 
-  private releaseSender(trackId: string) {
+  private releaseSender(trackId: string, restoreTrack = true) {
     const release = this.heldSenders.get(trackId);
     if (release) {
       this.heldSenders.delete(trackId);
-      release();
+      release(restoreTrack);
     }
   }
 
-  private releaseAllSenders() {
-    Array.from(this.heldSenders.keys()).forEach((trackId) => this.releaseSender(trackId));
+  private releaseAllSenders(restoreTrack = true) {
+    Array.from(this.heldSenders.keys()).forEach((trackId) =>
+      this.releaseSender(trackId, restoreTrack),
+    );
   }
 
   private handleSender(
@@ -737,8 +715,7 @@ export class E2EEManager
         packetTrailer: frameMetadata,
       };
       if (this.room.localParticipant.isE2EEEnabled) {
-        // before the transform exists, so no frame with content is encoded without it
-        this.holdUntilEncrypting(sender, trackId);
+        this.holdUntilAttached(sender, trackId);
       }
       // @ts-ignore
       sender.transform = new RTCRtpScriptTransform(this.worker, options);

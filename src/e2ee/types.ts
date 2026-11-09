@@ -178,14 +178,20 @@ export interface PTMetadataFromE2EEMessage extends BaseMessage {
 }
 
 /**
- * Sent by the worker once the encode transform of a local track handled its first frame with
- * encryption enabled. The E2eeManager holds the track's media until then (Safari).
+ * The round trip worker -> main thread -> worker that tells when a sender's transform is attached
+ * (see E2eeManager.holdUntilAttached). No frames can show it: the sender has no track until then.
  */
-export interface SenderEncryptingMessage extends BaseMessage {
-  kind: 'senderEncrypting';
+export interface SenderTransformCheckMessage extends BaseMessage {
+  kind: 'senderTransformCheck';
   data: {
     trackId: string;
-    participantIdentity: string;
+  };
+}
+
+export interface SenderTransformAttachedMessage extends BaseMessage {
+  kind: 'senderTransformAttached';
+  data: {
+    trackId: string;
   };
 }
 
@@ -208,7 +214,8 @@ export type E2EEWorkerMessage =
   | EncryptDataRequestMessage
   | EncryptDataResponseMessage
   | PTMetadataFromE2EEMessage
-  | SenderEncryptingMessage;
+  | SenderTransformCheckMessage
+  | SenderTransformAttachedMessage;
 
 export type KeySet = { material: CryptoKey; encryptionKey: CryptoKey };
 
