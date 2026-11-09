@@ -105,6 +105,71 @@ describe('E2EEManager sender hold', () => {
     expect(sends(track)).toBe(false);
   });
 
+  describe('turning encryption off', () => {
+    const inRoom = (isE2EEEnabled: boolean) => {
+      (manager as any).room = {
+        localParticipant: { identity: 'me', isE2EEEnabled },
+        getParticipantByIdentity: () => ({}),
+      };
+    };
+
+    it('releases a held sender when encryption really is off', () => {
+      const track = new FakeTrack();
+      inRoom(true);
+      (manager as any).holdUntilEncrypting(fakeSender(track), 'TR_1');
+
+      inRoom(false);
+      workerSays({ kind: 'enable', data: { enabled: false, participantIdentity: 'me' } });
+
+      expect(sends(track)).toBe(true);
+    });
+
+    it('keeps holding on a late reply from before encryption was turned on', () => {
+      const track = new FakeTrack();
+      inRoom(true);
+      (manager as any).holdUntilEncrypting(fakeSender(track), 'TR_1');
+
+      workerSays({ kind: 'enable', data: { enabled: false, participantIdentity: 'me' } });
+
+      expect(sends(track)).toBe(false);
+
+      workerSays({
+        kind: 'senderEncrypting',
+        data: { trackId: 'TR_1', participantIdentity: 'me' },
+      });
+
+      expect(sends(track)).toBe(true);
+    });
+
+    it("keeps holding when another participant's encryption goes off", () => {
+      const track = new FakeTrack();
+      inRoom(true);
+      (manager as any).holdUntilEncrypting(fakeSender(track), 'TR_1');
+
+      workerSays({ kind: 'enable', data: { enabled: false, participantIdentity: 'other' } });
+
+      expect(sends(track)).toBe(false);
+    });
+
+    it('holds a new sender only while encryption is on', () => {
+      vitest.stubGlobal('RTCRtpScriptTransform', class {});
+      window.RTCRtpScriptTransform = (globalThis as any).RTCRtpScriptTransform;
+      try {
+        const encrypted = new FakeTrack();
+        inRoom(true);
+        (manager as any).handleSender(fakeSender(encrypted), 'TR_1');
+        expect(sends(encrypted)).toBe(false);
+
+        const plain = new FakeTrack();
+        inRoom(false);
+        (manager as any).handleSender(fakeSender(plain), 'TR_2');
+        expect(sends(plain)).toBe(true);
+      } finally {
+        delete (window as any).RTCRtpScriptTransform;
+      }
+    });
+  });
+
   it('releases every held sender when the room disconnects', () => {
     const track = new FakeTrack();
     (manager as any).holdUntilEncrypting(fakeSender(track), 'TR_1');

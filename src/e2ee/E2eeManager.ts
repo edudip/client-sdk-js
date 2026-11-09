@@ -193,8 +193,13 @@ export class E2EEManager
           this.keyProvider.getKeys().forEach((keyInfo) => {
             this.postKey(keyInfo, false);
           });
-        } else if (data.participantIdentity === this.room?.localParticipant.identity) {
-          // encryption was turned off on purpose: nothing will report encrypting anymore
+        } else if (
+          this.room &&
+          data.participantIdentity === this.room.localParticipant.identity &&
+          !this.room.localParticipant.isE2EEEnabled
+        ) {
+          // encryption was turned off on purpose: nothing will report encrypting anymore. A late
+          // reply from before encryption was turned on must not release a held sender.
           this.releaseAllSenders();
         }
         if (
