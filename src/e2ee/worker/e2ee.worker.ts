@@ -376,14 +376,17 @@ if (self.RTCTransformEvent) {
       );
     });
     if (kind === 'encode' && holdId !== undefined) {
-      // WebKit attaches the transform only after this task
-      setTimeout(() => {
+      // WebKit attaches the transform only after this task: post from the next one
+      const { port1, port2 } = new MessageChannel();
+      port1.onmessage = () => {
+        port1.close();
         const msg: SenderTransformCheckMessage = {
           kind: 'senderTransformCheck',
           data: { trackId, holdId },
         };
         postMessage(msg);
-      });
+      };
+      port2.postMessage(null);
     }
   };
 }
