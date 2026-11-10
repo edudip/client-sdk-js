@@ -100,7 +100,6 @@ export class FrameCryptor extends BaseFrameCryptor {
    */
   private lastErrorTimestamp: Map<string, number> = new Map();
 
-  /** Frames dropped without an encryption trailer since the last warning about them. */
   private droppedWithoutTrailer = 0;
 
   private lastDroppedWithoutTrailerWarning = 0;
@@ -569,10 +568,7 @@ export class FrameCryptor extends BaseFrameCryptor {
     const keyIndex = data[encodedFrame.data.byteLength - 1];
 
     if (!hasEncryptedFrameTrailer(data, this.keyProviderOptions.keyringSize)) {
-      // Not a frame of our encryptor, e.g. one Safari sent unencrypted before the sender's transform
-      // was attached. Decrypting it would fail and count against a key that is fine, so drop it
-      // without an error. A warning at most every 10 s, as many drops can also mean a sender with
-      // another keyringSize.
+      // not encrypted by us, e.g. sent before Safari attached the sender's transform
       this.droppedWithoutTrailer += 1;
       const now = Date.now();
       if (now - this.lastDroppedWithoutTrailerWarning > 10_000) {
@@ -900,11 +896,7 @@ export class FrameCryptor extends BaseFrameCryptor {
  * by the livekit server and thus to be treated as unencrypted
  * @internal
  */
-/**
- * Whether the frame ends in the trailer encodeFunction writes: `IV_LENGTH | key index`, with a key
- * index inside the keyring. H.264 escaping never changes these two bytes. A frame sent without
- * encryption passes this check only by chance (about 1 in 4000 with the default keyring of 16).
- */
+/** Whether the frame ends in our `IV_LENGTH | key index` trailer. */
 export function hasEncryptedFrameTrailer(data: Uint8Array, keyringSize: number): boolean {
   const length = data.byteLength;
   return (

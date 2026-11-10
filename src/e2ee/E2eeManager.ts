@@ -87,7 +87,6 @@ export class E2EEManager
 
   private dataChannelEncryptionEnabled: boolean;
 
-  /** Local senders that wait for their transform, by track id (see holdUntilAttached). */
   private heldSenders: Map<string, { holdId: number; release: (restoreTrack: boolean) => void }> =
     new Map();
 
@@ -201,8 +200,7 @@ export class E2EEManager
           data.participantIdentity === this.room.localParticipant.identity &&
           !this.room.localParticipant.isE2EEEnabled
         ) {
-          // Encryption was turned off on purpose, so no transform is needed anymore. A late reply
-          // from before it was turned on must not release a held sender.
+          // encryption is off: nothing to wait for
           this.releaseAllSenders();
         }
         if (
@@ -345,8 +343,6 @@ export class E2EEManager
         );
       });
 
-    // The sender is gone, so its track is not put back. A publish that fails after the sender was
-    // created emits neither event: its hold is replaced by the next hold of that track.
     room.localParticipant.on(ParticipantEvent.LocalTrackUnpublished, (publication) => {
       if (publication.track) {
         this.releaseSender(publication.track.mediaStreamID, false);
@@ -642,24 +638,16 @@ export class E2EEManager
   }
 
   /**
-   * Keeps the track off a new sender until its RTCRtpScriptTransform is attached.
-   *
-   * WebKit passes frames through unchanged until the transform is attached
-   * (LibWebRTCRtpTransformBackend::Transform), which takes worker -> main thread -> worker tasks after
-   * the rtctransform event. So a sender whose worker is busy would send its first frames unencrypted.
-   * A sender without a track sends nothing. The check message goes the same way behind those tasks,
-   * and through the worker's message queue, behind the setup of the cryptor.
-   *
-   * Returns the hold's id, which the transform passes on to the worker's report.
+   * Keeps the track off a new sender until its transform is attached: WebKit sends frames
+   * unencrypted until then (LibWebRTCRtpTransformBackend::Transform).
    */
   private holdUntilAttached(sender: RTCRtpSender, trackId: string): number {
-    // an earlier sender of this track is gone (e.g. its publish failed): end its hold, keep its track off
     this.releaseSender(trackId, false);
     const holdId = this.nextHoldId++;
     const replaceTrack = sender.replaceTrack;
     let track = sender.track;
     replaceTrack.call(sender, null).catch((error) => log.warn('could not hold sender', { error }));
-    // LiveKit's own calls (device switch, restart, processor) must not attach a track early
+    // keep LiveKit's own calls until the release
     sender.replaceTrack = async (next: MediaStreamTrack | null) => {
       track = next;
     };
@@ -682,7 +670,6 @@ export class E2EEManager
     return holdId;
   }
 
-  /** `holdId`: only that hold, not a later one of the same track. */
   private releaseSender(trackId: string, restoreTrack = true, holdId?: number) {
     const held = this.heldSenders.get(trackId);
     if (held && (holdId === undefined || held.holdId === holdId)) {

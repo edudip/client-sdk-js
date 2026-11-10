@@ -177,10 +177,6 @@ export interface PTMetadataFromE2EEMessage extends BaseMessage {
   data: FrameMetadataPayload;
 }
 
-/**
- * The round trip worker -> main thread -> worker that tells when a sender's transform is attached
- * (see E2eeManager.holdUntilAttached). No frames can show it: the sender has no track until then.
- */
 export interface SenderTransformCheckMessage extends BaseMessage {
   kind: 'senderTransformCheck';
   data: {
@@ -271,11 +267,6 @@ export type ScriptTransformOptions = {
   kind: 'decode' | 'encode';
   participantIdentity: string;
   trackId: string;
-  /**
-   * Set on an encode transform whose sender waits for it (E2eeManager.holdUntilAttached): the
-   * worker then reports when it is attached, with this id, so a late report for an earlier sender
-   * of the same track releases nothing.
-   */
   holdId?: number;
   codec?: VideoCodec;
   /**

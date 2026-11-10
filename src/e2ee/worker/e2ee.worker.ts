@@ -376,7 +376,7 @@ if (self.RTCTransformEvent) {
       );
     });
     if (kind === 'encode' && holdId !== undefined) {
-      // after this task: only then WebKit starts attaching the transform (see holdUntilAttached)
+      // WebKit attaches the transform only after this task
       setTimeout(() => {
         const msg: SenderTransformCheckMessage = {
           kind: 'senderTransformCheck',
