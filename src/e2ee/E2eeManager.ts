@@ -651,9 +651,14 @@ export class E2EEManager
     sender.replaceTrack = async (next: MediaStreamTrack | null) => {
       track = next;
     };
+    const warning = setTimeout(
+      () => log.warn('sender still waits for its encryption transform', { trackId }),
+      5_000,
+    );
     this.heldSenders.set(trackId, {
       holdId,
       release: (restoreTrack) => {
+        clearTimeout(warning);
         sender.replaceTrack = replaceTrack;
         if (restoreTrack) {
           sender
