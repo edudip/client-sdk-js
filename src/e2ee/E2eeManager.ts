@@ -64,6 +64,14 @@ export interface BaseE2EEManager {
   on<E extends keyof E2EEManagerCallbacks>(event: E, listener: E2EEManagerCallbacks[E]): this;
 }
 
+type HeldSender = {
+  holdId: number;
+  sender: RTCRtpSender;
+  replaceTrack: RTCRtpSender['replaceTrack'];
+  track: MediaStreamTrack | null;
+  heldAt: number;
+};
+
 /**
  * @experimental
  */
@@ -87,8 +95,7 @@ export class E2EEManager
 
   private dataChannelEncryptionEnabled: boolean;
 
-  private heldSenders: Map<string, { holdId: number; release: (restoreTrack: boolean) => void }> =
-    new Map();
+  private heldSenders: Map<string, HeldSender> = new Map();
 
   private nextHoldId = 0;
 
@@ -643,38 +650,39 @@ export class E2EEManager
    */
   private holdUntilAttached(sender: RTCRtpSender, trackId: string): number {
     this.releaseSender(trackId, false);
-    const holdId = this.nextHoldId++;
-    const replaceTrack = sender.replaceTrack;
-    let track = sender.track;
-    replaceTrack.call(sender, null).catch((error) => log.warn('could not hold sender', { error }));
+    const held: HeldSender = {
+      holdId: this.nextHoldId++,
+      sender,
+      replaceTrack: sender.replaceTrack,
+      track: sender.track,
+      heldAt: Date.now(),
+    };
+    held.replaceTrack
+      .call(sender, null)
+      .catch((error) => log.warn('could not hold sender', { error }));
     // keep LiveKit's own calls until the release
     sender.replaceTrack = async (next: MediaStreamTrack | null) => {
-      track = next;
+      held.track = next;
     };
-    const warning = setTimeout(
-      () => log.warn('sender still waits for its encryption transform', { trackId }),
-      5_000,
-    );
-    this.heldSenders.set(trackId, {
-      holdId,
-      release: (restoreTrack) => {
-        clearTimeout(warning);
-        sender.replaceTrack = replaceTrack;
-        if (restoreTrack) {
-          sender
-            .replaceTrack(track)
-            .catch((error) => log.warn('could not release sender', { error }));
-        }
-      },
-    });
-    return holdId;
+    this.heldSenders.set(trackId, held);
+    return held.holdId;
   }
 
   private releaseSender(trackId: string, restoreTrack = true, holdId?: number) {
     const held = this.heldSenders.get(trackId);
-    if (held && (holdId === undefined || held.holdId === holdId)) {
-      this.heldSenders.delete(trackId);
-      held.release(restoreTrack);
+    if (!held || (holdId !== undefined && held.holdId !== holdId)) {
+      return;
+    }
+    this.heldSenders.delete(trackId);
+    const waitedMs = Date.now() - held.heldAt;
+    if (waitedMs > 1_000) {
+      log.warn('sender waited for its encryption transform', { trackId, waitedMs });
+    }
+    held.sender.replaceTrack = held.replaceTrack;
+    if (restoreTrack) {
+      held.sender
+        .replaceTrack(held.track)
+        .catch((error) => log.warn('could not release sender', { error }));
     }
   }
 
