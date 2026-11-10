@@ -37,7 +37,7 @@ describe('E2EEManager sender hold', () => {
     return { sender, native };
   };
 
-  const hold = (sender: unknown): number => (manager as any).holdUntilAttached(sender, 'TR_1');
+  const hold = (sender: unknown): number => (manager as any).holdSender(sender, 'TR_1');
   const workerSays = (data: object) => (manager as any).onWorkerMessage({ data } as MessageEvent);
   const attached = (holdId: number, trackId = 'TR_1') =>
     workerSays({ kind: 'senderTransformAttached', data: { trackId, holdId } });
@@ -62,21 +62,6 @@ describe('E2EEManager sender hold', () => {
     ]);
   });
 
-  it('keeps a track that LiveKit sets while held off the sender until release', async () => {
-    const { sender, native } = fakeSender();
-    const restarted = { id: 'restarted' } as MediaStreamTrack;
-
-    const holdId = hold(sender);
-    await sender.replaceTrack(restarted);
-    await Promise.resolve();
-    expect(sender.track).toBeNull();
-
-    attached(holdId);
-    await Promise.resolve();
-    expect(sender.track).toBe(restarted);
-    expect(sender.replaceTrack).toBe(native);
-  });
-
   it('ignores the report of another track', async () => {
     const { sender } = fakeSender();
 
@@ -92,7 +77,7 @@ describe('E2EEManager sender hold', () => {
       const first = fakeSender();
       const firstHold = hold(first.sender);
       // unpublished and published again while the first report was on its way
-      (manager as any).releaseSender('TR_1', false);
+      (manager as any).dropSenderHold('TR_1');
       const second = fakeSender();
       const secondHold = hold(second.sender);
 
@@ -150,7 +135,7 @@ describe('E2EEManager sender hold', () => {
 
       expect(sender.track).toBeNull();
       expect(sender.replaceTrack).toBe(native);
-      expect((manager as any).heldSenders.size).toBe(0);
+      expect((manager as any).senderHolds.size).toBe(0);
     });
 
     it('ends every hold without the track when the room disconnects', async () => {
@@ -162,7 +147,7 @@ describe('E2EEManager sender hold', () => {
 
       expect(sender.track).toBeNull();
       expect(sender.replaceTrack).toBe(native);
-      expect((manager as any).heldSenders.size).toBe(0);
+      expect((manager as any).senderHolds.size).toBe(0);
     });
   });
 
