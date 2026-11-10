@@ -185,6 +185,7 @@ export interface SenderTransformCheckMessage extends BaseMessage {
   kind: 'senderTransformCheck';
   data: {
     trackId: string;
+    holdId: number;
   };
 }
 
@@ -192,6 +193,7 @@ export interface SenderTransformAttachedMessage extends BaseMessage {
   kind: 'senderTransformAttached';
   data: {
     trackId: string;
+    holdId: number;
   };
 }
 
@@ -269,6 +271,12 @@ export type ScriptTransformOptions = {
   kind: 'decode' | 'encode';
   participantIdentity: string;
   trackId: string;
+  /**
+   * Set on an encode transform whose sender waits for it (E2eeManager.holdUntilAttached): the
+   * worker then reports when it is attached, with this id, so a late report for an earlier sender
+   * of the same track releases nothing.
+   */
+  holdId?: number;
   codec?: VideoCodec;
   /**
    * Whether the published track advertises packet trailer features.

@@ -100,6 +100,11 @@ export class FrameCryptor extends BaseFrameCryptor {
    */
   private lastErrorTimestamp: Map<string, number> = new Map();
 
+  /** Frames dropped without an encryption trailer since the last warning about them. */
+  private droppedWithoutTrailer = 0;
+
+  private lastDroppedWithoutTrailerWarning = 0;
+
   private errorCounts: Map<string, number> = new Map();
 
   private readonly ERROR_THROTTLE_MS = 1000; // Emit error at most once per second
@@ -566,11 +571,20 @@ export class FrameCryptor extends BaseFrameCryptor {
     if (!hasEncryptedFrameTrailer(data, this.keyProviderOptions.keyringSize)) {
       // Not a frame of our encryptor, e.g. one Safari sent unencrypted before the sender's transform
       // was attached. Decrypting it would fail and count against a key that is fine, so drop it
-      // without an error.
-      workerLogger.debug('dropping frame without an encryption trailer', {
-        ...this.logContext,
-        length: data.byteLength,
-      });
+      // without an error. A warning at most every 10 s, as many drops can also mean a sender with
+      // another keyringSize.
+      this.droppedWithoutTrailer += 1;
+      const now = Date.now();
+      if (now - this.lastDroppedWithoutTrailerWarning > 10_000) {
+        workerLogger.warn('dropped frames without an encryption trailer', {
+          ...this.logContext,
+          count: this.droppedWithoutTrailer,
+          keyIndex,
+          keyringSize: this.keyProviderOptions.keyringSize,
+        });
+        this.droppedWithoutTrailer = 0;
+        this.lastDroppedWithoutTrailerWarning = now;
+      }
       return;
     }
 

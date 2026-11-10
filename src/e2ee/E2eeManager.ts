@@ -87,8 +87,11 @@ export class E2EEManager
 
   private dataChannelEncryptionEnabled: boolean;
 
-  /** Ends the hold of local senders that wait for their transform, by track id (see holdUntilAttached). */
-  private heldSenders: Map<string, (restoreTrack: boolean) => void> = new Map();
+  /** Local senders that wait for their transform, by track id (see holdUntilAttached). */
+  private heldSenders: Map<string, { holdId: number; release: (restoreTrack: boolean) => void }> =
+    new Map();
+
+  private nextHoldId = 0;
 
   constructor(options: E2EEManagerOptions, dcEncryptionEnabled: boolean) {
     super();
@@ -250,7 +253,7 @@ export class E2EEManager
         this.worker.postMessage(ev.data);
         break;
       case 'senderTransformAttached':
-        this.releaseSender(data.trackId);
+        this.releaseSender(data.trackId, true, data.holdId);
         break;
       default:
         break;
@@ -342,6 +345,8 @@ export class E2EEManager
         );
       });
 
+    // The sender is gone, so its track is not put back. A publish that fails after the sender was
+    // created emits neither event: its hold is replaced by the next hold of that track.
     room.localParticipant.on(ParticipantEvent.LocalTrackUnpublished, (publication) => {
       if (publication.track) {
         this.releaseSender(publication.track.mediaStreamID, false);
@@ -637,11 +642,6 @@ export class E2EEManager
   }
 
   /**
-   * Handles the given {@code RTCRtpSender} by creating a {@code TransformStream} which will inject
-   * a frame encoder.
-   *
-   */
-  /**
    * Keeps the track off a new sender until its RTCRtpScriptTransform is attached.
    *
    * WebKit passes frames through unchanged until the transform is attached
@@ -649,11 +649,13 @@ export class E2EEManager
    * the rtctransform event. So a sender whose worker is busy would send its first frames unencrypted.
    * A sender without a track sends nothing. The check message goes the same way behind those tasks,
    * and through the worker's message queue, behind the setup of the cryptor.
+   *
+   * Returns the hold's id, which the transform passes on to the worker's report.
    */
-  private holdUntilAttached(sender: RTCRtpSender, trackId: string) {
-    if (this.heldSenders.has(trackId)) {
-      return;
-    }
+  private holdUntilAttached(sender: RTCRtpSender, trackId: string): number {
+    // an earlier sender of this track is gone (e.g. its publish failed): end its hold, keep its track off
+    this.releaseSender(trackId, false);
+    const holdId = this.nextHoldId++;
     const replaceTrack = sender.replaceTrack;
     let track = sender.track;
     replaceTrack.call(sender, null).catch((error) => log.warn('could not hold sender', { error }));
@@ -665,22 +667,27 @@ export class E2EEManager
       () => log.warn('sender still waits for its encryption transform', { trackId }),
       5_000,
     );
-    this.heldSenders.set(trackId, (restoreTrack) => {
-      clearTimeout(warning);
-      sender.replaceTrack = replaceTrack;
-      if (restoreTrack) {
-        sender
-          .replaceTrack(track)
-          .catch((error) => log.warn('could not release sender', { error }));
-      }
+    this.heldSenders.set(trackId, {
+      holdId,
+      release: (restoreTrack) => {
+        clearTimeout(warning);
+        sender.replaceTrack = replaceTrack;
+        if (restoreTrack) {
+          sender
+            .replaceTrack(track)
+            .catch((error) => log.warn('could not release sender', { error }));
+        }
+      },
     });
+    return holdId;
   }
 
-  private releaseSender(trackId: string, restoreTrack = true) {
-    const release = this.heldSenders.get(trackId);
-    if (release) {
+  /** `holdId`: only that hold, not a later one of the same track. */
+  private releaseSender(trackId: string, restoreTrack = true, holdId?: number) {
+    const held = this.heldSenders.get(trackId);
+    if (held && (holdId === undefined || held.holdId === holdId)) {
       this.heldSenders.delete(trackId);
-      release(restoreTrack);
+      held.release(restoreTrack);
     }
   }
 
@@ -690,6 +697,11 @@ export class E2EEManager
     );
   }
 
+  /**
+   * Handles the given {@code RTCRtpSender} by creating a {@code TransformStream} which will inject
+   * a frame encoder.
+   *
+   */
   private handleSender(
     sender: RTCRtpSender,
     trackId: string,
@@ -713,10 +725,10 @@ export class E2EEManager
         codec,
         hasPacketTrailer: hasFrameMetadataPublishOptions(frameMetadata),
         packetTrailer: frameMetadata,
+        holdId: this.room.localParticipant.isE2EEEnabled
+          ? this.holdUntilAttached(sender, trackId)
+          : undefined,
       };
-      if (this.room.localParticipant.isE2EEEnabled) {
-        this.holdUntilAttached(sender, trackId);
-      }
       // @ts-ignore
       sender.transform = new RTCRtpScriptTransform(this.worker, options);
     } else {

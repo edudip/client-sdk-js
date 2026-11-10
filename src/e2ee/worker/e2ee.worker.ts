@@ -203,7 +203,7 @@ onmessage = (ev) => {
       case 'senderTransformCheck':
         const attachedMsg: SenderTransformAttachedMessage = {
           kind: 'senderTransformAttached',
-          data: { trackId: data.trackId },
+          data: { trackId: data.trackId, holdId: data.holdId },
         };
         postMessage(attachedMsg);
         break;
@@ -360,7 +360,7 @@ if (self.RTCTransformEvent) {
     // @ts-ignore
     const transformer = event.transformer;
     const options = transformer.options as ScriptTransformOptions;
-    const { kind, participantIdentity, trackId, codec, hasPacketTrailer } = options;
+    const { kind, participantIdentity, trackId, codec, hasPacketTrailer, holdId } = options;
     messageQueue.run(async () => {
       const cryptor = getTrackCryptor(participantIdentity, trackId);
       cryptor.setHasFrameMetadata(hasPacketTrailer);
@@ -375,12 +375,12 @@ if (self.RTCTransformEvent) {
         kind === 'encode' ? options.packetTrailer : undefined,
       );
     });
-    if (kind === 'encode') {
+    if (kind === 'encode' && holdId !== undefined) {
       // after this task: only then WebKit starts attaching the transform (see holdUntilAttached)
       setTimeout(() => {
         const msg: SenderTransformCheckMessage = {
           kind: 'senderTransformCheck',
-          data: { trackId },
+          data: { trackId, holdId },
         };
         postMessage(msg);
       });

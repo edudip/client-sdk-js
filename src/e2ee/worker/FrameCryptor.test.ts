@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vitest } from 'vitest';
 import { appendPacketTrailer, extractPacketTrailer } from '../../frameMetadata/frameMetadata';
 import type { FrameMetadataPublishOptions } from '../../frameMetadata/types';
+import { workerLogger } from '../../logger';
 import type { NonSharedUint8Array } from '../../type-polyfills/non-shared-typed-arrays';
 import { IV_LENGTH, KEY_PROVIDER_DEFAULTS } from '../constants';
 import { CryptorEvent } from '../events';
@@ -469,6 +470,32 @@ describe('FrameCryptor', () => {
 
         expect(keys.decryptionFailure).not.toHaveBeenCalled();
         expect(errorListener).not.toHaveBeenCalled();
+        expect(output.chunks).toEqual([]);
+      } finally {
+        vitest.useRealTimers();
+      }
+    });
+
+    it('warns at most every 10 s about frames without an encryption trailer', async () => {
+      vitest.useFakeTimers();
+      try {
+        const { input, output } = prepareParticipantTestDecoder(participantIdentity, {});
+        const warn = vitest.spyOn(workerLogger, 'warn');
+
+        for (let i = 0; i < 5; i++) {
+          input.write(mockEncryptedRTCEncodedVideoFrame(200));
+        }
+        await vitest.advanceTimersToNextTimerAsync();
+        expect(warn).toHaveBeenCalledTimes(1);
+
+        vitest.advanceTimersByTime(10_001);
+        input.write(mockEncryptedRTCEncodedVideoFrame(200));
+        await vitest.advanceTimersToNextTimerAsync();
+        expect(warn).toHaveBeenCalledTimes(2);
+        expect(warn).toHaveBeenLastCalledWith(
+          'dropped frames without an encryption trailer',
+          expect.objectContaining({ count: 5, keyIndex: 200, keyringSize: 16 }),
+        );
         expect(output.chunks).toEqual([]);
       } finally {
         vitest.useRealTimers();
