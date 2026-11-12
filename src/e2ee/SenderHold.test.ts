@@ -61,6 +61,15 @@ describe('SenderHold', () => {
     expect(sender.replaceTrack).toBe(native);
   });
 
+  it('tells how long the sender was held when dropped', () => {
+    vitest.useFakeTimers();
+    const hold = holdOf(fakeSender().sender);
+
+    vitest.advanceTimersByTime(1_500);
+
+    expect(hold.drop()).toBe(1_500);
+  });
+
   it('gives every hold its own id', () => {
     expect(holdOf(fakeSender().sender).id).not.toBe(holdOf(fakeSender().sender).id);
   });

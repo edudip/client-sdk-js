@@ -1,15 +1,21 @@
 import { EventEmitter } from 'events';
 import { afterEach, beforeEach, describe, expect, it, vitest } from 'vitest';
+import log from '../logger';
 import { ParticipantEvent, RoomEvent } from '../room/events';
 import { E2EEManager } from './E2eeManager';
 import { ExternalE2EEKeyProvider } from './KeyProvider';
+import { CryptorError } from './errors';
+import { EncryptionEvent } from './events';
 
 describe('E2EEManager sender hold', () => {
   let manager: E2EEManager;
   let posted: object[];
+  let errors: Array<{ error: Error; identity?: string }>;
 
   beforeEach(() => {
     posted = [];
+    errors = [];
+    vitest.spyOn(log, 'error').mockImplementation(() => {});
     manager = new E2EEManager(
       {
         keyProvider: new ExternalE2EEKeyProvider(),
@@ -17,10 +23,15 @@ describe('E2EEManager sender hold', () => {
       },
       false,
     );
+    manager.on(EncryptionEvent.EncryptionError, (error, identity) =>
+      errors.push({ error, identity }),
+    );
   });
 
   afterEach(() => {
     vitest.unstubAllGlobals();
+    vitest.useRealTimers();
+    vitest.restoreAllMocks();
   });
 
   const track = { id: 'camera' } as MediaStreamTrack;
@@ -149,6 +160,44 @@ describe('E2EEManager sender hold', () => {
       expect(sender.replaceTrack).toBe(native);
       expect((manager as any).senderHolds.size).toBe(0);
     });
+
+    it('reports a hold that ended without its transform after a long wait', () => {
+      vitest.useFakeTimers();
+      hold(fakeSender().sender);
+
+      vitest.advanceTimersByTime(1_500);
+      room.emit(RoomEvent.Disconnected);
+
+      expect(errors).toEqual([{ error: expect.any(CryptorError), identity: 'me' }]);
+      expect(errors[0].error.message).toBe('sender held 1500 ms without its encryption transform');
+    });
+
+    it('does not report a hold that ended quickly or was released', () => {
+      vitest.useFakeTimers();
+      hold(fakeSender().sender);
+      room.localParticipant.emit(ParticipantEvent.LocalTrackUnpublished, {
+        track: { mediaStreamID: 'TR_1' },
+      });
+
+      const released = hold(fakeSender().sender);
+      vitest.advanceTimersByTime(1_500);
+      attached(released);
+      room.emit(RoomEvent.Disconnected);
+
+      expect(errors).toEqual([]);
+    });
+
+    it('reports the held senders when the worker fails', () => {
+      hold(fakeSender().sender);
+
+      (manager as any).onWorkerError({ error: new Error('worker died') } as ErrorEvent);
+
+      expect(errors.map(({ error }) => error.message)).toEqual([
+        'worker died',
+        'e2ee worker failed while senders were held',
+      ]);
+      expect((manager as any).senderHolds.size).toBe(1);
+    });
   });
 
   describe('turning encryption off', () => {
@@ -223,6 +272,33 @@ describe('E2EEManager sender hold', () => {
         // the worker reports with the hold's id, and only for a held sender
         expect(options[0].holdId).toEqual(expect.any(Number));
         expect(options[1].holdId).toBeUndefined();
+      } finally {
+        delete (window as any).RTCRtpScriptTransform;
+      }
+    });
+
+    it('keeps holding and reports when the transform cannot be created', async () => {
+      const failure = new Error('DataCloneError');
+      vitest.stubGlobal(
+        'RTCRtpScriptTransform',
+        class {
+          constructor() {
+            throw failure;
+          }
+        },
+      );
+      (window as any).RTCRtpScriptTransform = (globalThis as any).RTCRtpScriptTransform;
+      try {
+        const { sender } = fakeSender();
+        inRoom(true);
+
+        expect(() => (manager as any).handleSender(sender, 'TR_1')).toThrow(failure);
+        await Promise.resolve();
+
+        expect(sender.track).toBeNull();
+        expect(errors.map(({ error }) => error.message)).toEqual([
+          'could not create the encryption transform',
+        ]);
       } finally {
         delete (window as any).RTCRtpScriptTransform;
       }

@@ -35,8 +35,7 @@ export class SenderHold {
 
   /** Ends the hold and puts the track on the sender. */
   release() {
-    this.drop();
-    const waitedMs = Date.now() - this.heldAt;
+    const waitedMs = this.drop();
     if (waitedMs > 1_000) {
       log.warn('sender waited for its encryption transform', { trackId: this.trackId, waitedMs });
     }
@@ -45,8 +44,9 @@ export class SenderHold {
       .catch((error) => log.warn('could not release sender', { error }));
   }
 
-  /** Ends the hold without sending the track. */
-  drop() {
+  /** Ends the hold without sending the track and returns how long the sender was held. */
+  drop(): number {
     this.sender.replaceTrack = this.replaceTrack;
+    return Date.now() - this.heldAt;
   }
 }
