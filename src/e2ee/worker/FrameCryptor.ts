@@ -891,11 +891,6 @@ export class FrameCryptor extends BaseFrameCryptor {
   }
 }
 
-/**
- * we use a magic frame trailer to detect whether a frame is injected
- * by the livekit server and thus to be treated as unencrypted
- * @internal
- */
 /** Whether the frame ends in our `IV_LENGTH | key index` trailer. */
 export function hasEncryptedFrameTrailer(data: Uint8Array, keyringSize: number): boolean {
   const length = data.byteLength;
@@ -904,6 +899,11 @@ export function hasEncryptedFrameTrailer(data: Uint8Array, keyringSize: number):
   );
 }
 
+/**
+ * we use a magic frame trailer to detect whether a frame is injected
+ * by the livekit server and thus to be treated as unencrypted
+ * @internal
+ */
 export function isFrameServerInjected(
   frameData: ArrayBuffer,
   trailerBytes: NonSharedUint8Array,
