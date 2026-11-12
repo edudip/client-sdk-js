@@ -100,6 +100,10 @@ export class FrameCryptor extends BaseFrameCryptor {
    */
   private lastErrorTimestamp: Map<string, number> = new Map();
 
+  private droppedWithoutTrailer = 0;
+
+  private lastDroppedWithoutTrailerWarning = 0;
+
   private errorCounts: Map<string, number> = new Map();
 
   private readonly ERROR_THROTTLE_MS = 1000; // Emit error at most once per second
@@ -563,6 +567,23 @@ export class FrameCryptor extends BaseFrameCryptor {
     const data = new Uint8Array(encodedFrame.data);
     const keyIndex = data[encodedFrame.data.byteLength - 1];
 
+    if (!hasEncryptedFrameTrailer(data, this.keyProviderOptions.keyringSize)) {
+      // not encrypted by us, e.g. sent before Safari attached the sender's transform
+      this.droppedWithoutTrailer += 1;
+      const now = Date.now();
+      if (now - this.lastDroppedWithoutTrailerWarning > 10_000) {
+        workerLogger.warn('dropped frames without an encryption trailer', {
+          ...this.logContext,
+          count: this.droppedWithoutTrailer,
+          keyIndex,
+          keyringSize: this.keyProviderOptions.keyringSize,
+        });
+        this.droppedWithoutTrailer = 0;
+        this.lastDroppedWithoutTrailerWarning = now;
+      }
+      return;
+    }
+
     if (this.keys.hasInvalidKeyAtIndex(keyIndex)) {
       // drop frame
       return;
@@ -868,6 +889,14 @@ export class FrameCryptor extends BaseFrameCryptor {
     const codec = payloadType ? this.rtpMap.get(payloadType) : undefined;
     return codec;
   }
+}
+
+/** Whether the frame ends in our `IV_LENGTH | key index` trailer. */
+export function hasEncryptedFrameTrailer(data: Uint8Array, keyringSize: number): boolean {
+  const length = data.byteLength;
+  return (
+    length >= IV_LENGTH + 2 && data[length - 2] === IV_LENGTH && data[length - 1] < keyringSize
+  );
 }
 
 /**

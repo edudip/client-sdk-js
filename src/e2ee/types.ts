@@ -177,6 +177,22 @@ export interface PTMetadataFromE2EEMessage extends BaseMessage {
   data: FrameMetadataPayload;
 }
 
+export interface SenderTransformCheckMessage extends BaseMessage {
+  kind: 'senderTransformCheck';
+  data: {
+    trackId: string;
+    holdId: number;
+  };
+}
+
+export interface SenderTransformAttachedMessage extends BaseMessage {
+  kind: 'senderTransformAttached';
+  data: {
+    trackId: string;
+    holdId: number;
+  };
+}
+
 export type E2EEWorkerMessage =
   | InitMessage
   | SetKeyMessage
@@ -195,7 +211,9 @@ export type E2EEWorkerMessage =
   | DecryptDataResponseMessage
   | EncryptDataRequestMessage
   | EncryptDataResponseMessage
-  | PTMetadataFromE2EEMessage;
+  | PTMetadataFromE2EEMessage
+  | SenderTransformCheckMessage
+  | SenderTransformAttachedMessage;
 
 export type KeySet = { material: CryptoKey; encryptionKey: CryptoKey };
 
@@ -249,6 +267,7 @@ export type ScriptTransformOptions = {
   kind: 'decode' | 'encode';
   participantIdentity: string;
   trackId: string;
+  holdId?: number;
   codec?: VideoCodec;
   /**
    * Whether the published track advertises packet trailer features.

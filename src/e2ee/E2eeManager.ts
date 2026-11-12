@@ -23,7 +23,9 @@ import {
 } from '../room/utils';
 import type { NonSharedUint8Array } from '../type-polyfills/non-shared-typed-arrays';
 import type { BaseKeyProvider } from './KeyProvider';
+import { SenderHold } from './SenderHold';
 import { E2EE_FLAG } from './constants';
+import { CryptorError, CryptorErrorReason } from './errors';
 import { type E2EEManagerCallbacks, EncryptionEvent, KeyProviderEvent } from './events';
 import type {
   DecryptDataRequestMessage,
@@ -86,6 +88,8 @@ export class E2EEManager
     new Map();
 
   private dataChannelEncryptionEnabled: boolean;
+
+  private senderHolds: Map<string, SenderHold> = new Map();
 
   constructor(options: E2EEManagerOptions, dcEncryptionEnabled: boolean) {
     super();
@@ -190,6 +194,14 @@ export class E2EEManager
           this.keyProvider.getKeys().forEach((keyInfo) => {
             this.postKey(keyInfo, false);
           });
+        } else if (
+          this.room &&
+          data.participantIdentity === this.room.localParticipant.identity &&
+          !this.room.localParticipant.isE2EEEnabled
+        ) {
+          // encryption is off: nothing to wait for
+          this.senderHolds.forEach((hold) => hold.release());
+          this.senderHolds.clear();
         }
         if (
           this.encryptionEnabled !== data.enabled &&
@@ -235,6 +247,17 @@ export class E2EEManager
       case 'packetTrailerMetadata':
         this.handleFrameMetadata(data.trackId, data.rtpTimestamp, data.ssrc, data.metadata);
         break;
+      case 'senderTransformCheck':
+        this.worker.postMessage(ev.data);
+        break;
+      case 'senderTransformAttached': {
+        const hold = this.senderHolds.get(data.trackId);
+        if (hold?.id === data.holdId) {
+          this.senderHolds.delete(data.trackId);
+          hold.release();
+        }
+        break;
+      }
       default:
         break;
     }
@@ -243,6 +266,12 @@ export class E2EEManager
   private onWorkerError = (ev: ErrorEvent) => {
     log.error('e2ee worker encountered an error:', { error: ev.error });
     this.emit(EncryptionEvent.EncryptionError, ev.error, undefined);
+    if (this.senderHolds.size > 0) {
+      // the holds stay: the worker that would encrypt their media is gone
+      this.reportHeldSenders('e2ee worker failed while senders were held', {
+        trackIds: [...this.senderHolds.keys()],
+      });
+    }
   };
 
   private handleFrameMetadata(
@@ -324,6 +353,15 @@ export class E2EEManager
           this.room.localParticipant.identity,
         );
       });
+
+    room.localParticipant.on(ParticipantEvent.LocalTrackUnpublished, (publication) => {
+      if (publication.track) {
+        this.dropSenderHold(publication.track.mediaStreamID);
+      }
+    });
+    room.on(RoomEvent.Disconnected, () => {
+      [...this.senderHolds.keys()].forEach((trackId) => this.dropSenderHold(trackId));
+    });
 
     room.localParticipant.on(ParticipantEvent.LocalSenderCreated, async (sender, track) => {
       this.setupE2EESender(track, sender);
@@ -612,6 +650,39 @@ export class E2EEManager
     receiver[E2EE_FLAG] = trackId;
   }
 
+  private holdSender(sender: RTCRtpSender, trackId: string): number {
+    this.dropSenderHold(trackId);
+    const hold = new SenderHold(sender, trackId);
+    this.senderHolds.set(trackId, hold);
+    return hold.id;
+  }
+
+  private dropSenderHold(trackId: string) {
+    const hold = this.senderHolds.get(trackId);
+    if (!hold) {
+      return;
+    }
+    this.senderHolds.delete(trackId);
+    const waitedMs = hold.drop();
+    if (waitedMs > 1_000) {
+      // the participant was published but sent nothing all that time
+      this.reportHeldSenders(`sender held ${waitedMs} ms without its encryption transform`, {
+        trackId,
+      });
+    }
+  }
+
+  /** Reports held senders as an EncryptionError, the only error apps get to see. */
+  private reportHeldSenders(message: string, context: object) {
+    const identity = this.room?.localParticipant.identity;
+    log.error(message, context);
+    this.emit(
+      EncryptionEvent.EncryptionError,
+      new CryptorError(message, CryptorErrorReason.InternalError, identity),
+      identity,
+    );
+  }
+
   /**
    * Handles the given {@code RTCRtpSender} by creating a {@code TransformStream} which will inject
    * a frame encoder.
@@ -640,9 +711,18 @@ export class E2EEManager
         codec,
         hasPacketTrailer: hasFrameMetadataPublishOptions(frameMetadata),
         packetTrailer: frameMetadata,
+        holdId: this.room.localParticipant.isE2EEEnabled
+          ? this.holdSender(sender, trackId)
+          : undefined,
       };
-      // @ts-ignore
-      sender.transform = new RTCRtpScriptTransform(this.worker, options);
+      try {
+        // @ts-ignore
+        sender.transform = new RTCRtpScriptTransform(this.worker, options);
+      } catch (error) {
+        // the sender stays held: without the transform its media would go out unencrypted
+        this.reportHeldSenders('could not create the encryption transform', { trackId, error });
+        throw error;
+      }
     } else {
       log.info('initialize encoded streams');
       // @ts-ignore

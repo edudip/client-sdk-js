@@ -16,6 +16,8 @@ import type {
   RatchetRequestMessage,
   RatchetResult,
   ScriptTransformOptions,
+  SenderTransformAttachedMessage,
+  SenderTransformCheckMessage,
 } from '../types';
 import { DataCryptor } from './DataCryptor';
 import { FrameCryptor, encryptionEnabledMap } from './FrameCryptor';
@@ -198,6 +200,13 @@ onmessage = (ev) => {
       case 'setSifTrailer':
         handleSifTrailer(data.trailer);
         break;
+      case 'senderTransformCheck':
+        const attachedMsg: SenderTransformAttachedMessage = {
+          kind: 'senderTransformAttached',
+          data: { trackId: data.trackId, holdId: data.holdId },
+        };
+        postMessage(attachedMsg);
+        break;
       default:
         break;
     }
@@ -351,7 +360,7 @@ if (self.RTCTransformEvent) {
     // @ts-ignore
     const transformer = event.transformer;
     const options = transformer.options as ScriptTransformOptions;
-    const { kind, participantIdentity, trackId, codec, hasPacketTrailer } = options;
+    const { kind, participantIdentity, trackId, codec, hasPacketTrailer, holdId } = options;
     messageQueue.run(async () => {
       const cryptor = getTrackCryptor(participantIdentity, trackId);
       cryptor.setHasFrameMetadata(hasPacketTrailer);
@@ -366,5 +375,15 @@ if (self.RTCTransformEvent) {
         kind === 'encode' ? options.packetTrailer : undefined,
       );
     });
+    if (kind === 'encode' && holdId !== undefined) {
+      // WebKit attaches the transform only after this task
+      setTimeout(() => {
+        const msg: SenderTransformCheckMessage = {
+          kind: 'senderTransformCheck',
+          data: { trackId, holdId },
+        };
+        postMessage(msg);
+      });
+    }
   };
 }

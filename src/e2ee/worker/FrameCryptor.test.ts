@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vitest } from 'vitest';
 import { appendPacketTrailer, extractPacketTrailer } from '../../frameMetadata/frameMetadata';
 import type { FrameMetadataPublishOptions } from '../../frameMetadata/types';
+import { workerLogger } from '../../logger';
 import type { NonSharedUint8Array } from '../../type-polyfills/non-shared-typed-arrays';
 import { IV_LENGTH, KEY_PROVIDER_DEFAULTS } from '../constants';
 import { CryptorEvent } from '../events';
@@ -11,8 +12,9 @@ import { ParticipantKeyHandler } from './ParticipantKeyHandler';
 
 function mockEncryptedRTCEncodedVideoFrame(keyIndex: number): RTCEncodedVideoFrame {
   const trailer = mockFrameTrailer(keyIndex);
-  const data = new Uint8Array(trailer.length + 10);
-  data.set(trailer, 10);
+  // 10 bytes of payload, the IV, then the trailer
+  const data = new Uint8Array(10 + IV_LENGTH + trailer.length);
+  data.set(trailer, 10 + IV_LENGTH);
   return mockRTCEncodedVideoFrame(data);
 }
 
@@ -416,6 +418,84 @@ describe('FrameCryptor', () => {
         input.write(mockEncryptedRTCEncodedVideoFrame(0));
         await vitest.advanceTimersToNextTimerAsync();
 
+        expect(output.chunks).toEqual([]);
+      } finally {
+        vitest.useRealTimers();
+      }
+    });
+
+    it('drops a frame without an encryption trailer without counting a failure', async () => {
+      vitest.useFakeTimers();
+      try {
+        const { cryptor, keys, input, output } = prepareParticipantTestDecoder(
+          participantIdentity,
+          {},
+        );
+        await keys.setKey(await createKeyMaterialFromString('key1'), 0);
+        vitest.spyOn(crypto.subtle, 'decrypt');
+        vitest.spyOn(keys, 'decryptionFailure');
+        const errorListener = vitest.fn();
+        cryptor.on(CryptorEvent.Error, errorListener);
+
+        // an unencrypted frame whose last byte happens to be the index of a key we hold
+        const plain = new Uint8Array(40).fill(7);
+        plain[39] = 0;
+        input.write(mockRTCEncodedVideoFrame(plain));
+        await vitest.advanceTimersToNextTimerAsync();
+
+        expect(crypto.subtle.decrypt).not.toHaveBeenCalled();
+        expect(keys.decryptionFailure).not.toHaveBeenCalled();
+        expect(errorListener).not.toHaveBeenCalled();
+        expect(output.chunks).toEqual([]);
+        expect(keys.hasValidKey).toBe(true);
+      } finally {
+        vitest.useRealTimers();
+      }
+    });
+
+    it('drops a frame with a key index outside the keyring without counting a failure', async () => {
+      vitest.useFakeTimers();
+      try {
+        const { cryptor, keys, input, output } = prepareParticipantTestDecoder(
+          participantIdentity,
+          {},
+        );
+        vitest.spyOn(keys, 'decryptionFailure');
+        const errorListener = vitest.fn();
+        cryptor.on(CryptorEvent.Error, errorListener);
+
+        // unencrypted Opus frames from an iPhone were read as key index 127 or 143
+        input.write(mockEncryptedRTCEncodedVideoFrame(127));
+        await vitest.advanceTimersToNextTimerAsync();
+
+        expect(keys.decryptionFailure).not.toHaveBeenCalled();
+        expect(errorListener).not.toHaveBeenCalled();
+        expect(output.chunks).toEqual([]);
+      } finally {
+        vitest.useRealTimers();
+      }
+    });
+
+    it('warns at most every 10 s about frames without an encryption trailer', async () => {
+      vitest.useFakeTimers();
+      try {
+        const { input, output } = prepareParticipantTestDecoder(participantIdentity, {});
+        const warn = vitest.spyOn(workerLogger, 'warn');
+
+        for (let i = 0; i < 5; i++) {
+          input.write(mockEncryptedRTCEncodedVideoFrame(200));
+        }
+        await vitest.advanceTimersToNextTimerAsync();
+        expect(warn).toHaveBeenCalledTimes(1);
+
+        vitest.advanceTimersByTime(10_001);
+        input.write(mockEncryptedRTCEncodedVideoFrame(200));
+        await vitest.advanceTimersToNextTimerAsync();
+        expect(warn).toHaveBeenCalledTimes(2);
+        expect(warn).toHaveBeenLastCalledWith(
+          'dropped frames without an encryption trailer',
+          expect.objectContaining({ count: 5, keyIndex: 200, keyringSize: 16 }),
+        );
         expect(output.chunks).toEqual([]);
       } finally {
         vitest.useRealTimers();
